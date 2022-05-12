@@ -17,52 +17,34 @@ def read_json_path(json_data, key):
     return json_data
 
 
-def get_html_page(url, headers={}):
-    return requests.get(url, headers=headers)
+def get_html_page(url, headers=None):
+    if headers is None:
+        headers = {}
+
+    result = requests.get(url, headers=headers)
+
+    if result.status_code != 200:
+        raise ConnectionRefusedError(f'{url} response code: {result.status_code}')
+
+    return result
 
 
-def json_path_backtrack_by_value(json_dict_or_list, value) -> list:
-    """
-    Returns json path to the value found
-    :param json_dict_or_list: json data
-    :param value: value we search for
-    :return: list of individual path segments [start, next, ... , final]
-    """
-    if json_dict_or_list == value:
-        return [json_dict_or_list]
-    elif isinstance(json_dict_or_list, dict):
-        for k, v in json_dict_or_list.items():
-            p = json_path_backtrack_by_value(v, value)
-            if p:
-                return [k] + p
-    elif isinstance(json_dict_or_list, list):
-        lst = json_dict_or_list
-        for i in range(len(lst)):
-            p = json_path_backtrack_by_value(lst[i], value)
-            if p:
-                return [str(i)] + p
+def json_find_value_by_key(json_repr, key):
+    results = []
 
+    def _decode_dict(a_dict):
+        try:
+            results.append(a_dict[key])
+        except KeyError:
+            pass
+        return a_dict
 
-def json_path_backtrack_by_key(json_dict_or_list, key) -> list:
-    """
-    Returns json path to the key found
-    :param json_dict_or_list: json data
-    :param key: key we search for
-    :return: list of individual path segments [start, next, ... , final]
-    """
-    if json_dict_or_list == key:
-        return [json_dict_or_list]
-    elif isinstance(json_dict_or_list, dict):
-        for k, v in json_dict_or_list.items():
-            p = json_path_backtrack_by_key(k, key)
-            if p:
-                return [k] + p
-    elif isinstance(json_dict_or_list, list):
-        lst = json_dict_or_list
-        for i in range(len(lst)):
-            p = json_path_backtrack_by_key(lst[i], key)
-            if p:
-                return [str(i)] + p
+    json.loads(str(json_repr).replace("'", '"'), object_hook=_decode_dict)  # Return value ignored.
+
+    if not results:
+        return None
+    else:
+        return results[0]
 
 
 def get_lyrics(url, lyrics_source="azlyrics"):
@@ -71,9 +53,10 @@ def get_lyrics(url, lyrics_source="azlyrics"):
         raise ValueError(f'please choose lyrics_source parameter between {sources}')
 
     html = get_html_page(url, headers={'Accept-Language': 'en-US,en;q=0.5',
-                                       'User-Agent': 'bot grabbing authors of the song'})
+                                       'User-Agent': 'bot grabber authors/song names to find lyrics for it'
+                                                     ' (educational project)'})
 
-    # get json variable from youtube with info about artist and song name (and much more)
+    # get json variable from YouTube with info about artist and song name (and much more)
     json_var_from_youtube = re.search(r'var ytInitialData = (.*?);</script>', html.text).group(1)
     json_data: dict = json.loads(json_var_from_youtube)
 
@@ -81,55 +64,18 @@ def get_lyrics(url, lyrics_source="azlyrics"):
         'videoSecondaryInfoRenderer']['metadataRowContainer']['metadataRowContainerRenderer']['rows']
 
     if not json_data:
-        raise ValueError('Cant find initial data variable in youtube page...')
+        raise ValueError('Cant find initial data variable in YouTube page...')
 
-    song = json_path_backtrack_by_key(json_data[3]['metadataRowRenderer']['contents'][0], 'text')
+    song = json_find_value_by_key(json_data[3]['metadataRowRenderer']['contents'][0], 'text')
     if not song:
-        song = json_path_backtrack_by_key(json_data[3]['metadataRowRenderer']['contents'][0], 'simpleText')
+        song = json_find_value_by_key(json_data[3]['metadataRowRenderer']['contents'][0], 'simpleText')
 
-    # (json path to variables) youtube change paths, so try different way to get values
-    """ 
-    key_to_song = "contents.twoColumnWatchNextResults.results.results.contents.1" \
-                  ".videoSecondaryInfoRenderer.metadataRowContainer.metadataRowContainerRenderer" \
-                  ".rows.3.metadataRowRenderer.contents.0.simpleText"
+    artist = json_find_value_by_key(json_data[4]['metadataRowRenderer']['contents'][0], 'text')
+    if not artist:
+        artist = json_find_value_by_key(json_data[4]['metadataRowRenderer']['contents'][0], 'simpleText')
 
-    "Object.contents.twoColumnWatchNextResults.results.results.contents" \
-    "[1].videoSecondaryInfoRenderer.metadataRowContainer" \
-    ".metadataRowContainerRenderer.rows[4].metadataRowRenderer.contents[0].simpleText"
-    
-    key_to_artist = "contents.twoColumnWatchNextResults.results.results.contents" \
-                    ".1.videoSecondaryInfoRenderer.metadataRowContainer" \
-                    ".metadataRowContainerRenderer.rows.4.metadataRowRenderer.contents.0.runs.0.text"
-                    
-    """
-
-    # song = read_json_path(json_data, key_to_song)
-    # artist = read_json_path(json_data, key_to_artist)
-
-    # k = json_path_backtrack(json_data, 'Artist')[:-3]
-    # artist = list(read_json_path(json_data, '.'.join(k) + '.contents')[0].values())[0]
-    # k = json_path_backtrack(json_data, 'Song')[:-3]
-    # song = list(read_json_path(json_data, '.'.join(k) + '.contents')[0].values())[0]
-
-    k = json_path_backtrack_by_value(json_data, 'Artist')[:-3]
-    artist = read_json_path(json_data, '.'.join(k) + '.contents')[0]
-
-    if 'text' in artist.keys():
-        artist = artist.get('text')
-    elif 'simpleText' in artist.keys():
-        artist = artist.get('simpleText')
-    else:
-        artist = list(artist.values())[0][0]
-        raise ValueError('Cant retrieve artist from youtube page')
-
-    k = json_path_backtrack_by_value(json_data, 'Song')[:-3]
-    song = read_json_path(json_data, '.'.join(k) + '.contents')[0]
-    if 'text' in song.keys():
-        song = song.get('text')
-    elif 'simpleText' in song.keys():
-        song = song.get('simpleText')
-    else:
-        raise ValueError('Cant retrieve song name from youtube page')
+    if not artist or not song:
+        raise ValueError('Cant retrieve artist/song names from YouTube page...')
 
     # excluding (live) (remastered) (feat) etc
     song = re.sub(r'(\(.*?\))|(\{.*?})|(\".*?\")', '', song)
@@ -172,22 +118,22 @@ def get_lyrics(url, lyrics_source="azlyrics"):
         result = result.find_next('span').get_text()
 
     if result:
-        result = f'Song: {song} by {artist}\n{best_match_link}\n\n {result.strip().rstrip().lstrip()}'
+        result = f'Song: {song} by {artist}'.center(80, '=') + \
+                 f'\n{best_match_link}\n\n' + \
+                 f'{result.strip().rstrip().lstrip()}\n\n' + \
+                 f''.center(80, '=') + '\n'
         return result
     else:
         return None
 
 
 def main():
-    # 'https://www.youtube.com/watch?v=30w8DyEJ__0'
-    url = 'https://www.youtube.com/watch?v=luwAMFcc2f8'
 
     print(get_lyrics('https://www.youtube.com/watch?v=I42-CayHVnA', 'musixmatch'))
 
     print(get_lyrics('https://www.youtube.com/watch?v=luwAMFcc2f8', 'musixmatch'))
 
-    print(get_lyrics('https://www.youtube.com/watch?v=30w8DyEJ__0', 'musixmatch'))
-    n = 1
+    # print(get_lyrics('https://www.youtube.com/watch?v=30w8DyEJ__0', 'musixmatch'))
 
 
 if __name__ == '__main__':
