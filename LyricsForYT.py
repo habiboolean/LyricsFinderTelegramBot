@@ -136,9 +136,18 @@ class LyricsForYT:
         # get first(top) link as best match in search result page
         match self.lyrics_source:
             case "azlyrics":
-                self.link_lyrics = soup.find(class_='table table-condensed').find_next("a")['href']
+                link = soup.find(class_='table table-condensed')
+                if not link:
+                    self._print_error('No search results found')
+                    return None
+
+                self.link_lyrics = link.find_next("a")['href']
             case "musixmatch":
-                self.link_lyrics = "https://www.musixmatch.com" + soup.find(class_='box-content').find_next("a")['href']
+                link = soup.find(class_='box-content')
+                if not link:
+                    self._print_error('No search results found')
+                    return None
+                self.link_lyrics = "https://www.musixmatch.com" + link.find_next("a")['href']
 
         html = self._get_html_page(self.link_lyrics, self._header_musixmatch)
         if not html:
