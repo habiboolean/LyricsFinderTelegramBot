@@ -1,6 +1,5 @@
 import json
 import re
-import sys
 import urllib.parse
 
 import requests
@@ -97,7 +96,7 @@ class LyricsForYT:
     def _print_error(self, err_message):
         result = f' {self.youtube_link} '.center(80, '=') + \
                  f'\n{err_message}\n' + \
-                 f''.center(80, '=') +\
+                 f''.center(80, '=') + \
                  '\n\n'
         print(result)
 
@@ -173,7 +172,7 @@ class LyricsForYT:
         return True
 
     def __init__(self, youtube_link: str, lyrics_source='musixmatch'):
-        correct_yt_link = 'https://www.youtube.com/watch?v='
+        yt_link_check = 'https://www.youtube.com/watch?v='
         self.youtube_link = youtube_link
         self.lyrics_source = lyrics_source
         self.link_lyrics = None
@@ -181,7 +180,7 @@ class LyricsForYT:
         self.song = None
         self.lyrics = None
 
-        if not youtube_link or not youtube_link.startswith(correct_yt_link):
+        if not youtube_link or not youtube_link.startswith(yt_link_check):
             self._print_error(f'Please, enter correct YouTube link')
             return
 
