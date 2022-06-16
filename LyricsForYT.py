@@ -1,89 +1,194 @@
 import json
 import re
 import urllib.parse
+from typing import Any
 
 import requests
 from bs4 import BeautifulSoup
 
 
+class LyricsBotExceptions:
+    class Error(Exception):
+        """Base class for exceptions"""
+        pass
+
+    class GetHTMLError(Error):
+        """Page unavailable, etc..."""
+        pass
+
+    class CantRetrieveArtistOrSongNames(Error):
+        """Initial data was found, but cant parse youtube page and get artist or song names from it"""
+        pass
+
+    class InitialDataNotFound(Error):
+        """
+        Cant find metadata - var ytInitialData in youtube page
+        Possibly not valid page, video was deleted, etc..
+        """
+        pass
+
+    class CantFindLyrics(Error):
+        """
+        Sources of lyrics not found any lyrics for search query.
+        Or beautiful soup cant parse page.
+        """
+        pass
+
+    class InvalidLink(Error):
+        """Provided link didnt pass validation"""
+        pass
+
+
 class LyricsForYT:
+    # headers for requests
     _header_musixmatch = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                                         "(KHTML, like Gecko) Chrome/101.0.4951.54 Safari/537.36"}
+    # using en-US version of youtube, because we search Artist and Song in json in eng
     _header_youtube = {'Accept-Language': 'en-US,en;q=0.5',
-                       'User-Agent': 'bot grabbing authors/song names to find lyrics for it (educational project)'}
+                       'User-Agent': 'bot grabbing authors/song names to find response for it (educational project)'}
 
     @staticmethod
-    def _get_html_page(url, headers=None):
+    def _get_html_page(url, headers=None) -> requests.Response:
+        """
+        Return Response object if no exceptions raised
+
+        :param url: link to page we need HTML
+        :param headers: headers for get request
+        :raises LyricsBotExceptions.GetHTMLError:
+        :return: requests.Response object
+        """
         if headers is None:
             headers = {}
 
         try:
             result = requests.get(url, headers=headers)
-        except requests.exceptions.RequestException as e:
-            # print(f'Error: Cant get this URL: {url}')
-            return None
+        except requests.exceptions.RequestException:
+            raise LyricsBotExceptions.GetHTMLError
 
         if result.status_code != 200:
-            # print(f'{url} response code: {result.status_code}')
-            return None
+            # just in case to see if youtube ban ip for too many requests
+            print(f'{url} response code: {result.status_code}')
+            raise LyricsBotExceptions.GetHTMLError
 
         return result
 
-    @staticmethod
-    def _json_get_value_by_key(json_repr, key):
-        results = []
+    def _get_youtube_metadata(self) -> dict:
+        """
+        Get dict with ytInitialData and keep only part with song/artist info
 
-        def _decode_dict(a_dict):
-            try:
-                results.append(a_dict[key])
-            except KeyError:
-                pass
-            return a_dict
-
-        json.loads(str(json_repr).replace("'", '"'), object_hook=_decode_dict)  # Return value ignored.
-
-        if not results:
-            return None
-        else:
-            return results[0]
-
-    def _get_youtube_metadata(self):
+        :raises LyricsBotExceptions.InitialDataNotFound:
+        :return: dict
+        """
         youtube_html = self._get_html_page(self.youtube_link, headers=self._header_youtube)
-
-        if not youtube_html:
-            return None
 
         try:
             json_var_from_youtube = re.search(r'var ytInitialData = (.*?);</script>', youtube_html.text).group(1)
             json_data: dict = json.loads(json_var_from_youtube)
-
+            # take only part we need to extract song/artist names
             json_data = json_data['contents']['twoColumnWatchNextResults']['results']['results']['contents'][1][
                 'videoSecondaryInfoRenderer']['metadataRowContainer']['metadataRowContainerRenderer']['rows']
-        except Exception as e:
-            # print('Error: cant find or load ytInitialData variable from YouTube page')
-            return None
+        except Exception:
+            raise LyricsBotExceptions.InitialDataNotFound
 
         return json_data
 
-    def _get_song_artist(self, youtube_json_data):
+    def _json_get_value_by_first_found_key(self, json_data, key: tuple) -> (bool, Any):
+        """
+        Search through json data, looking for a keys.
+        Returns status of operation and value of first found key
+        Depth search through tree dict/list
 
-        try:
-            song = self._json_get_value_by_key(youtube_json_data[3]['metadataRowRenderer']['contents'][0], 'text')
-            if not song:
-                song = self._json_get_value_by_key(youtube_json_data[3]['metadataRowRenderer']['contents'][0],
-                                                   'simpleText')
+        :param json_data: dict or list tree
+        :param key: keys to find in dict
+        :return: tuple(bool, Any)
+        """
+        if isinstance(json_data, list):
+            for v in json_data:
+                if isinstance(v, (dict, list)):
+                    result = self._json_get_value_by_first_found_key(v, key)
+                    if result:
+                        return result
+        elif isinstance(json_data, dict):
+            for k, v in json_data.items():
+                if isinstance(v, (dict, list)):
 
-            artist = self._json_get_value_by_key(youtube_json_data[4]['metadataRowRenderer']['contents'][0], 'text')
-            if not artist:
-                artist = self._json_get_value_by_key(youtube_json_data[4]['metadataRowRenderer']['contents'][0],
-                                                     'simpleText')
-        except Exception as e:
-            # print('Error: cant retrieve artist/song names from YouTube page')
-            return None
+                    result = self._json_get_value_by_first_found_key(v, key)
+                    if result:
+                        return result
+                elif k in key:
+
+                    return True, v
+
+        return False, None
+
+    def _json_find_path_by_value(self, json_data, value, path: list) -> (bool, list):
+        """
+        Search through json data, looking for a provided value.
+        Returns status(bool) of search and path(list) to found key.
+
+        :param json_data: tree structure to search in (i.e. dict or list)
+        :param value: value to search for
+        :param path: path to value
+        :return: tuple(status(bool), path(list))
+        """
+        def check_for_value(key, val):
+            """
+            Checks if we found value we search for.
+            Just to reduce duplication of code.
+            """
+            if isinstance(val, (dict, list)):
+                p = path.copy()  # copy path to pass it clean, without adding all with for loop below
+                p.append(key)
+                status, result = self._json_find_path_by_value(val, value, p)
+                if status:
+                    return status, result
+            elif val == value:
+                path.append(key)
+                return True, path
+
+        if isinstance(json_data, list):
+            for k, v in enumerate(json_data):
+                temp = check_for_value(k, v)
+                if temp:
+                    return temp
+        elif isinstance(json_data, dict):
+            for k, v in json_data.items():
+                temp = check_for_value(k, v)
+                if temp:
+                    return temp
+
+        return False, []
+
+    def _get_song_artist(self, youtube_json_data) -> (str, str):
+        """
+        Try to retrieve info about song name and artist name for search query in lyrics sources
+
+        :param youtube_json_data: metadata from youtube
+        :return: tuple(Song, Artist)
+        :raises LyricsBotExceptions.CantRetrieveArtistOrSongNames:
+        """
+        song = None
+        artist = None
+
+        # possible names for keys that can contain Artist or Song
+        key_names_for_search = ('text', 'simpleText')
+
+        status, artist_path = self._json_find_path_by_value(youtube_json_data, 'Artist', [])
+        if status:
+            artist_dict = youtube_json_data[artist_path[0]][artist_path[1]]['contents']
+            s, artist = self._json_get_value_by_first_found_key(artist_dict, key_names_for_search)
+            if not s:
+                s, artist = self._json_get_value_by_first_found_key(artist_dict, key_names_for_search)
+
+        status, song_path = self._json_find_path_by_value(youtube_json_data, 'Song', [])
+        if status:
+            song_dict = youtube_json_data[song_path[0]][song_path[1]]['contents']
+            s, song = self._json_get_value_by_first_found_key(song_dict, key_names_for_search)
+            if not s:
+                s, song = self._json_get_value_by_first_found_key(song_dict, key_names_for_search)
 
         if not artist or not song:
-            # print('Error: cant retrieve artist/song names from YouTube page')
-            return None
+            raise LyricsBotExceptions.CantRetrieveArtistOrSongNames
 
         # excluding (live) (remastered) (feat) etc
         song = re.sub(r'(\(.*?\))|(\{.*?})|(\".*?\")', '', song)
@@ -91,124 +196,138 @@ class LyricsForYT:
         # just in case, to simplify artist too
         artist = re.sub(r'(\(.*?\))|(\{.*?})|(\".*?\")', '', artist)
 
+        song = song.replace('/', '-')
+
+        artist = artist.replace('/', '-')
+
         return song, artist
 
-    def _print_error(self, err_message):
-        result = f' {self.youtube_link} '.center(80, '=') + \
-                 f'\n{err_message}\n' + \
-                 f''.center(80, '=') + \
-                 '\n\n'
-        print(result)
+    def _search_in_azlyrics(self, search_lyrics_query) -> (str, str):
+        """
+        Lyrics provider - azlyrics.com
+        Search in for a song/author
 
-    def get_lyrics(self):
+        :param search_lyrics_query:
+        :raises LyricsBotExceptions.CantFindLyrics:
+        :return: tuple(LinkToLyrics, LyricsText) if found. If nothing found, return - None
+        """
+        url = f"https://search.azlyrics.com/search.php?q={'+'.join(search_lyrics_query)}"
+        html = self._get_html_page(url, self._header_musixmatch)
+        soup = BeautifulSoup(html.content, 'html.parser')
+        link = soup.find(class_='table table-condensed')
+        if not link:
+            raise LyricsBotExceptions.CantFindLyrics
 
+        link_lyrics = link.find_next("a")['href']
+
+        html = self._get_html_page(link_lyrics, self._header_musixmatch)
+        soup = BeautifulSoup(html.text, 'html.parser')
+        lyrics = soup.find(class_='col-xs-12 col-lg-8 text-center').select_one('div:nth-of-type(5)').get_text()
+        if lyrics is None:
+            return None
+        return link_lyrics, lyrics
+
+    def _search_in_musixmatch(self, search_lyrics_query) -> (str, str):
+        """
+        Lyrics provider - musixmatch.com
+        Search in for a song/author
+
+        :param search_lyrics_query:
+        :raises LyricsBotExceptions.CantFindLyrics:
+        :return: tuple(LinkToLyrics, LyricsText) if found. If nothing found, return - None
+        """
+        url = f"https://www.musixmatch.com/search/{urllib.parse.quote(' '.join(search_lyrics_query))}"
+        html = self._get_html_page(url, self._header_musixmatch)
+        soup = BeautifulSoup(html.content, 'html.parser')
+        link = soup.find(class_='box-content')
+        if not link:
+            raise LyricsBotExceptions.CantFindLyrics
+
+        link_lyrics = "https://www.musixmatch.com" + link.find_next("a")['href']
+
+        html = self._get_html_page(link_lyrics, self._header_musixmatch)
+        soup = BeautifulSoup(html.text, 'html.parser')
+        lyrics = soup.find(class_='col-sm-10 col-md-8 col-ml-6 col-lg-6').find_next('span').get_text()
+
+        if lyrics is None:
+            return LyricsBotExceptions.CantFindLyrics
+
+        return link_lyrics, lyrics
+
+    def get_lyrics(self) -> str:
+        """
+        Main function. Collects all necessary data.
+        Tries to find lyrics in lyrics websites one by one.
+        If found, returns str.
+        If nothing found, raises exception.
+
+        :raises LyricsBotExceptions.CantFindLyrics: If none of sources returned lyrics
+        :return: str. Lyrics formatted for telegram(for now)
+        """
         # get (var ytInitialData) from youtube link
         youtube_metadata = self._get_youtube_metadata()
-
-        if not youtube_metadata:
-            self._print_error('Cant get youtube metadata')
-            return None
 
         # try to parse song and artist names from metadata
         self.song, self.artist = self._get_song_artist(youtube_metadata)
 
-        if not self.song or not self.artist:
-            self._print_error('Cant extract song/artist names from youtube metadata')
-            return None
-
-        # generate search query list for lyrics sources
+        # generate search query list for response sources
         search_lyrics_query = self.artist.split() + self.song.split()
 
-        url = None
-        match self.lyrics_source:
-            case "azlyrics":
-                url = f"https://search.azlyrics.com/search.php?q={'+'.join(search_lyrics_query)}"
-            case "musixmatch":
-                url = f"https://www.musixmatch.com/search/{urllib.parse.quote(' '.join(search_lyrics_query))}"
+        """
+        Trying to get lyrics one by one, if we get response from source, return it immediately
+        If no response, going through sources.
+        If no response from any of them, raise exception
+        """
+        try:
+            link_lyrics, lyrics = self._search_in_musixmatch(search_lyrics_query)
+        except Exception:
+            pass
+        else:
+            self.link_lyrics = link_lyrics
+            self.raw_lyrics = lyrics
+            return self.__format_lyrics_for_telegram()
 
-        html = self._get_html_page(url, self._header_musixmatch)
-        if not html:
-            self._print_error(f'Cant get html from lyrics search source: {url}')
-            return None
+        try:
+            link_lyrics, lyrics = self._search_in_azlyrics(search_lyrics_query)
+        except Exception:
+            pass
+        else:
+            self.link_lyrics = link_lyrics
+            self.raw_lyrics = lyrics
+            return self.__format_lyrics_for_telegram()
 
-        soup = BeautifulSoup(html.content, 'html.parser')
+        raise LyricsBotExceptions.CantFindLyrics
 
-        # get first(top) link as best match in search result page
-        match self.lyrics_source:
-            case "azlyrics":
-                link = soup.find(class_='table table-condensed')
-                if not link:
-                    self._print_error('No search results found')
-                    return None
+    def __format_lyrics_for_telegram(self) -> str:
+        """Return formatted string for telegram with song name, artist name, link to lyrics found and lyrics"""
+        if self.raw_lyrics:
+            result = f'<b>Song: {self.song} by {self.artist}</b>' + \
+                     f'\n\n{self.link_lyrics}\n\n' + \
+                     f'{self.raw_lyrics}'
+            return result
 
-                self.link_lyrics = link.find_next("a")['href']
-            case "musixmatch":
-                link = soup.find(class_='box-content')
-                if not link:
-                    self._print_error('No search results found')
-                    return None
-                self.link_lyrics = "https://www.musixmatch.com" + link.find_next("a")['href']
+        return ""
 
-        html = self._get_html_page(self.link_lyrics, self._header_musixmatch)
-        if not html:
-            self._print_error(f'Cant get html from lyrics source: {self.link_lyrics}')
-            return None
-        soup = BeautifulSoup(html.text, 'html.parser')
+    def __init__(self, youtube_link: str):
+        """
 
-        match self.lyrics_source:
-            case "azlyrics":
-                lyrics = soup.find(class_='col-xs-12 col-lg-8 text-center').select_one('div:nth-of-type(5)').get_text()
-                if lyrics is None:
-                    self._print_error(f'Cant parse lyrics from: {self.link_lyrics}')
-                    if input(f'Try different source for {self.youtube_link}? y/n --> ') == 'y':
-                        LyricsForYT(self.youtube_link, 'musixmatch')
-                        return None
-                    else:
-                        return None
-                self.lyrics = lyrics
-            case "musixmatch":
-                lyrics = soup.find(class_='col-sm-10 col-md-8 col-ml-6 col-lg-6')
-                if lyrics is None:
-                    self._print_error(f'Cant parse lyrics from: {self.link_lyrics}')
-                    if input(f'Try different source for {self.youtube_link}? y/n --> ') == 'y':
-                        LyricsForYT(self.youtube_link, 'azlyrics')
-                        return None
-                    else:
-                        return None
-                lyrics = lyrics.find_next(class_='mxm-lyrics')
-                lyrics = lyrics.find_next('span').get_text()
-                self.lyrics = lyrics
-        return True
+        :param str youtube_link: self-explanatory
+        """
 
-    def __init__(self, youtube_link: str, lyrics_source='musixmatch'):
-        yt_link_check = 'https://www.youtube.com/watch?v='
-        self.youtube_link = youtube_link
-        self.lyrics_source = lyrics_source
-        self.link_lyrics = None
-        self.artist = None
-        self.song = None
-        self.lyrics = None
+        ytl_regex = r"^(?:https?:\/\/)?(?:m\.|www\.)?(?:youtu\.be\/|youtube\.com" \
+                    r"\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))(?:(?:\w|-){11})(?:\S+)?$"
 
-        if not youtube_link or not youtube_link.startswith(yt_link_check):
-            self._print_error(f'Please, enter correct YouTube link')
-            return
+        if not youtube_link or not re.match(ytl_regex, youtube_link):
+            raise LyricsBotExceptions.InvalidLink
 
-        lyrics_sources = ['azlyrics', 'musixmatch']
-        if lyrics_source not in lyrics_sources:
-            self._print_error(f'Please, choose lyrics_source parameter between {lyrics_sources}')
-            return
+        self.youtube_link = youtube_link  # link to youtube video we try to get lyrics for
+        self.link_lyrics = None  # link to lyrics source was found or None
+        self.artist = None  # name of band/artist/singer if found in youtube page
+        self.song = None  # name of song if found in youtube page
+        self.raw_lyrics = None  # lyrics that was extracted from lyrics source or None
 
-        result = self.get_lyrics()
-        if result is None:
-            return
+    def __len__(self):
+        return len(self.__format_lyrics_for_telegram())
 
     def __str__(self):
-        if self.lyrics:
-            result = f'Song: {self.song} by {self.artist}'.center(80, '=') + \
-                     f'\n{self.link_lyrics}\n' + \
-                     f'{self.lyrics}\n' + \
-                     f''.center(80, '=') + \
-                     '\n\n'
-            return result
-        else:
-            return ""
+        return self.__format_lyrics_for_telegram()
