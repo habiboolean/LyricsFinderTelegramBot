@@ -80,13 +80,13 @@ class LyricsForYT:
         :return: dict
         """
         youtube_html = self._get_html_page(self.youtube_link, headers=self._header_youtube)
-
+        #['contents']['twoColumnWatchNextResults']['results']['results']['contents'][1]['videoSecondaryInfoRenderer']['metadataRowContainer']['metadataRowContainerRenderer']['rows']
+        #x.engagementPanels[1].engagementPanelSectionListRenderer.content.structuredDescriptionContentRenderer.items[1].videoDescriptionMusicSectionRenderer.carouselLockups[0].carouselLockupRenderer.infoRows
         try:
             json_var_from_youtube = re.search(r'var ytInitialData = (.*?);</script>', youtube_html.text).group(1)
             json_data: dict = json.loads(json_var_from_youtube)
             # take only part we need to extract song/artist names
-            json_data = json_data['contents']['twoColumnWatchNextResults']['results']['results']['contents'][1][
-                'videoSecondaryInfoRenderer']['metadataRowContainer']['metadataRowContainerRenderer']['rows']
+            json_data = json_data['engagementPanels'][1]['engagementPanelSectionListRenderer']['content']['structuredDescriptionContentRenderer']['items'][1]['videoDescriptionMusicSectionRenderer']['carouselLockups'][0]['carouselLockupRenderer']['infoRows']
         except Exception:
             raise LyricsBotExceptions.InitialDataNotFound
 
@@ -173,16 +173,16 @@ class LyricsForYT:
         # possible names for keys that can contain Artist or Song
         key_names_for_search = ('text', 'simpleText')
 
-        status, artist_path = self._json_find_path_by_value(youtube_json_data, 'Artist', [])
+        status, artist_path = self._json_find_path_by_value(youtube_json_data, 'ARTIST', [])
         if status:
-            artist_dict = youtube_json_data[artist_path[0]][artist_path[1]]['contents']
+            artist_dict = youtube_json_data[artist_path[0]][artist_path[1]]['defaultMetadata']
             s, artist = self._json_get_value_by_first_found_key(artist_dict, key_names_for_search)
             if not s:
                 s, artist = self._json_get_value_by_first_found_key(artist_dict, key_names_for_search)
 
-        status, song_path = self._json_find_path_by_value(youtube_json_data, 'Song', [])
+        status, song_path = self._json_find_path_by_value(youtube_json_data, 'SONG', [])
         if status:
-            song_dict = youtube_json_data[song_path[0]][song_path[1]]['contents']
+            song_dict = youtube_json_data[song_path[0]][song_path[1]]['defaultMetadata']
             s, song = self._json_get_value_by_first_found_key(song_dict, key_names_for_search)
             if not s:
                 s, song = self._json_get_value_by_first_found_key(song_dict, key_names_for_search)
@@ -230,7 +230,7 @@ class LyricsForYT:
     def _search_in_musixmatch(self, search_lyrics_query) -> (str, str):
         """
         Lyrics provider - musixmatch.com
-        Search in for a song/author
+        Searching for a song/author
 
         :param search_lyrics_query:
         :raises LyricsBotExceptions.CantFindLyrics:
